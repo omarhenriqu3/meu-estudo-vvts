@@ -321,9 +321,9 @@ sequenceDiagram
 
 **Objetivo e Defeitos Revelados:** Validar que o sistema respeita uma regra de negócio definida pelo cliente, do ponto de vista do usuário final — não da implementação interna. Revela regras de negócio mal implementadas ou ausentes (ex.: o limite de 10 itens não sendo verificado) e mensagens de erro pouco claras para o usuário.
 
-### Teste Alfa
+### 3.2 Teste Alfa
 
-#### 1. Diagrama de Sequencia UML
+#### 1. Diagrama de Sequência UML
 ```mermaid
 sequenceDiagram
     autonumber
@@ -366,3 +366,51 @@ sequenceDiagram
 **Como a abordagem é aplicada:** Como o objetivo é simular o uso real do produto, a abordagem é de teste exploratório e livre. Por exemplo, por impaciência ou erro humano, um voluntário pode realizar um duplo clique no botão "Pagar". Esse comportamento imprevisto dispara duas requisições simultâneas de DebitarEstoque. O banco de dados acusa um erro de concorrência, retornando o status 500 (Internal Server Error) e exibindo uma mensagem técnica que quebra a tela do usuário.
 
 **Objetivos e Defeitos revelados** Identificar comportamentos inesperados, problemas de usabilidade e bugs não mapeados (como condições de corrida ou erros não tratados na interface) antes que o sistema seja exposto a clientes externos, atuando como um filtro de qualidade de negócio.
+
+### 3.3 Teste Beta 
+
+#### 1. Diagrama de Sequência UML
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Cliente as Usuário Beta (Cliente Real)
+    participant App as App Shop20 (Produção)
+    participant API as API de Produção
+    participant Telemetria as Monitoramento Passivo (Sentry)
+    participant Feedback as Canal de Feedback Ativo
+
+    Note over Cliente, Feedback: Teste Beta: Ocorre no mundo real, em seus próprios dispositivos, sem supervisão da equipe de QA.
+
+    Cliente->>App: Acessa novo Checkout (Feature Flag ativada)
+    activate App
+    
+    App->>API: POST /pagamento/processar
+    activate API
+    
+    Note over Cliente, API: Simulação de problema real (Ex: Queda de sinal 4G do cliente)
+    
+    API-->>App: Timeout (Tempo de requisição esgotado)
+    deactivate API
+    
+    App-->>Cliente: Botão de "Confirmar" trava carregando
+    
+    Note over App, Telemetria: Coleta Passiva (Invisível ao usuário)
+    App->>Telemetria: Envia log de timeout silenciosamente
+    
+    Note over Cliente, Feedback: Coleta Ativa (Interação direta do usuário)
+    Cliente->>App: Balança o celular (Shake to Report)
+    App->>Feedback: Abre tela de reporte com print automático
+    activate Feedback
+    
+    Cliente->>Feedback: Digita: "O botão de Pix travou na rua" e envia
+    Feedback-->>Cliente: "Obrigado! Seu feedback ajuda o Shop20 a melhorar."
+    deactivate Feedback
+    
+    deactivate App
+```
+#### 2. Explicação Textual do Cenário
+**Contexto:** A nova versão do sistema, como o novo Checkout Unificado do Marketplace, já passou pelo Teste Alfa e foi implantada no ambiente de Produção. No entanto, ela ainda não é disponibilizada para todos os usuários. Para controlar essa liberação, utilizamos a técnica de Feature Flag (chave de ativação). O novo código já está presente no sistema, mas a funcionalidade é ativada inicialmente para uma pequena parcela dos clientes, por exemplo, 5% dos clientes mais ativos ou membros VIP do Shop20. Dessa forma, o teste é realizado por clientes reais, utilizando dispositivos, condições de rede e dados reais, diferentemente do Teste Alfa, que ocorre em um ambiente controlado.
+
+**Como a abordagem é aplicada** O Cliente acessa o novo Checkout pelo App Shop20, que está liberado por uma Feature Flag. Ao realizar o pagamento, o App envia uma requisição para a API de Produção. Durante o processo, ocorre uma queda de conexão, causando um Timeout. O problema é registrado automaticamente pelo Monitoramento Passivo (Sentry). Além disso, o Cliente pode utilizar o Canal de Feedback Ativo para relatar o problema, permitindo que a equipe identifique falhas que acontecem em condições reais de uso. 
+
+**Objetivo e Defeitos Revelados:** Validar o comportamento do software no mundo real. Revela com facilidade defeitos de fragmentação de dispositivos (compatibilidade com celulares antigos), falhas em redes instáveis e comportamentos de uso que a equipe interna jamais conseguiria prever.
