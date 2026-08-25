@@ -320,3 +320,49 @@ sequenceDiagram
 **Como a abordagem é aplicada:** Considerando que o usuário esteja logado e tente adicionar 11 itens ao carrinho, o sistema deverá consultar e aplicar a regra de negócio que estabelece o limite máximo de 10 itens, por meio da função `consultarRegrasEEstoque(produtoId)`. Como resultado, a ação deverá ser bloqueada, retornando o status **422 — Unprocessable Entity**, e o sistema deverá exibir uma mensagem de alerta ao usuário informando que o limite máximo de itens do carrinho foi atingido.
 
 **Objetivo e Defeitos Revelados:** Validar que o sistema respeita uma regra de negócio definida pelo cliente, do ponto de vista do usuário final — não da implementação interna. Revela regras de negócio mal implementadas ou ausentes (ex.: o limite de 10 itens não sendo verificado) e mensagens de erro pouco claras para o usuário.
+
+### Teste Alfa
+
+#### 1. Diagrama de Sequencia UML
+```mermaid
+sequenceDiagram
+    autonumber
+    actor QA as Voluntário Interno / QA
+    participant UI as Interface Web (Staging)
+    participant API as API Shop20
+    participant BD as Banco de Dados
+    participant Tracker as Bug Tracker (Jira)
+
+    Note over QA, Tracker: Sessão de Teste Alfa (Exploratório em Staging)
+
+    QA->>UI: Realiza fluxo atípico (ex: duplo clique em "Pagar")
+    activate UI
+    
+    UI->>API: POST /carrinho/checkout (Chamada 1)
+    UI->>API: POST /carrinho/checkout (Chamada 2 simultânea)
+    activate API
+    
+    API->>BD: debitarEstoque()
+    activate BD
+    BD-->>API: Conflito de concorrência (Race Condition)
+    deactivate BD
+    
+    API-->>UI: Retorna Erro 500 (Internal Server Error)
+    deactivate API
+    
+    UI-->>QA: Exibe código de erro técnico quebrando a tela (Falha)
+    deactivate UI
+    
+    Note over QA, UI: Comportamento inesperado detectado pelo testador
+    
+    QA->>Tracker: Registrar Bug: "Duplo clique no checkout exibe Erro 500"
+    activate Tracker
+    Tracker-->>QA: Ticket [SHOP-992] criado para a equipe de desenvolvimento
+    deactivate Tracker
+```
+#### 2. Explicação Textual do Cenário
+**Contexto:** O Teste Alfa ocorre quando a nova versão do Shop20 está finalizada do ponto de vista do desenvolvimento, mas ainda não é segura o suficiente para ser liberada aos clientes reais. Ele é realizado no ambiente de Staging (Homologação), que atua como uma réplica exata do ambiente de Produção. Para simular a experiência real, o teste é conduzido pela Equipe de QA que orquestra e coleta as métricas em conjunto com funcionários voluntários de outros setores (como RH e Atendimento).
+
+**Como a abordagem é aplicada:** Como o objetivo é simular o uso real do produto, a abordagem é de teste exploratório e livre. Por exemplo, por impaciência ou erro humano, um voluntário pode realizar um duplo clique no botão "Pagar". Esse comportamento imprevisto dispara duas requisições simultâneas de DebitarEstoque. O banco de dados acusa um erro de concorrência, retornando o status 500 (Internal Server Error) e exibindo uma mensagem técnica que quebra a tela do usuário.
+
+**Objetivos e Defeitos revelados** Identificar comportamentos inesperados, problemas de usabilidade e bugs não mapeados (como condições de corrida ou erros não tratados na interface) antes que o sistema seja exposto a clientes externos, atuando como um filtro de qualidade de negócio.
