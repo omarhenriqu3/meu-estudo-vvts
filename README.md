@@ -271,7 +271,9 @@ sequenceDiagram
 
 #### 2. Explicação Textual do Cenário
 **Contexto:** Um novo recurso (ex: regra de cupom de desconto) foi adicionado ao projeto e pode ter quebrado o que já funcionava no cálculo do carrinho.
+
 **Como a abordagem é aplicada:** Um servidor de integração contínua (CI/CD) agrupa todos os testes criados anteriormente em uma Suíte de Testes e os reexecuta automaticamente ao menor sinal de alteração no código-fonte.
+
 **Objetivo e Defeitos Revelados:** Revela efeitos colaterais indesejados onde código novo corrompe funcionalidades antigas.
 
 ---
@@ -314,5 +316,7 @@ sequenceDiagram
 ```
 #### 2. Explicação Textual do Cenário
 **Contexto:** Nesse teste, busca-se validar se o sistema realmente atende às necessidades e expectativas do usuário e aos requisitos definidos para o sistema. Considerando a quantidade de itens que o usúario deseja adicionar ao carrinho.
+
 **Como a abordagem é aplicada:** Considerando que o usuário esteja logado e tente adicionar 11 itens ao carrinho, o sistema deverá consultar e aplicar a regra de negócio que estabelece o limite máximo de 10 itens, por meio da função `consultarRegrasEEstoque(produtoId)`. Como resultado, a ação deverá ser bloqueada, retornando o status **422 — Unprocessable Entity**, e o sistema deverá exibir uma mensagem de alerta ao usuário informando que o limite máximo de itens do carrinho foi atingido.
+
 **Objetivo e Defeitos Revelados:** Validar que o sistema respeita uma regra de negócio definida pelo cliente, do ponto de vista do usuário final — não da implementação interna. Revela regras de negócio mal implementadas ou ausentes (ex.: o limite de 10 itens não sendo verificado) e mensagens de erro pouco claras para o usuário.
