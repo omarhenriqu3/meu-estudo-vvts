@@ -546,6 +546,9 @@ flowchart TD
     
     %% Observabilidade
     Monitor[[Ferramenta de Observabilidade<br/>Grafana / Datadog]]
+    
+    %% Alerta de Ruptura (Corrigido para sintaxe de Flowchart)
+    Alerta>PONTO DE RUPTURA:<br/>Tempos de resposta > 10s<br/>Taxa de Erro 503 > 60%]
 
     %% Relações de Tráfego
     G1 & G2 & G3 == "Injeção de 15.000 RPS<br/>(Simulação Black Friday)" === LB
@@ -561,8 +564,7 @@ flowchart TD
     API1 & API2 & API3 -. "Métricas: Latência, CPU, RAM" .-> Monitor
     DB -. "Alerta: Esgotamento de Pool de Conexões" .-> Monitor
     
-    %% Registro de Ruptura
-    Note right of Monitor: PONTO DE RUPTURA:<br/>Tempos de resposta > 10s<br/>Taxa de Erro 503 > 60%
+    Monitor -.-> Alerta
  ```
 #### 2. Explicação Textual do Cenário
 *Contexto:* No Shop20, o Teste de Estresse verifica o comportamento e os limites da arquitetura sob condições extremas de tráfego, simulando um evento de pico como a Black Friday. Nesse cenário, o objetivo não é confirmar se o sistema funciona em condições normais, mas sim submetê-lo a uma carga absurdamente alta (saltando de 500 para 15.000 requisições por segundo) para descobrir qual é o seu exato ponto de ruptura.
