@@ -26,7 +26,7 @@ classDiagram
 ```
 
 #### 2. Explicação Textual do Cenário
-**Contexto:** No Shop20, usamos o Teste de Unidade para testar a classe CalculadoraDeDescontoCarrinho totalmente sozinha, sem conectar com o banco de dados. A classe de teste envia as informações (valor, quantidade, perfil VIP) direto para a calculadora e confere se o resultado final bate com o esperado. Isso serve para achar erros nas contas matemáticas ou bloquear dados errados (como uma quantidade negativa) logo no começo da programação, antes de juntar com o resto do sistema.
+**Contexto:** No Shop20, usamos o Teste de Unidade para testar a classe CalculadoraCarrinho totalmente sozinha, sem conectar com o banco de dados. A classe de teste envia as informações (valor, quantidade, perfil VIP) direto para a calculadora e confere se o resultado final bate com o esperado. Isso serve para achar erros nas contas matemáticas ou bloquear dados errados (como uma quantidade negativa) logo no começo da programação, antes de juntar com o resto do sistema.
 
 **Como a abordagem é aplicada:** o método `testarDescontoMaximoVipComCincoItens()` confirma que um cliente VIP com 5 itens recebe o percentual máximo de desconto; `testarCondicaoDeBordaQuantidadeCinco()` verifica o comportamento exatamente no limiar que muda a faixa de desconto; e `testarExcecaoParaQuantidadeNegativa()` garante que `calcularDescontoProgressivo()` rejeita uma quantidade inválida em vez de retornar um valor incorreto silenciosamente.
 
@@ -270,9 +270,9 @@ sequenceDiagram
 ```
 
 #### 2. Explicação Textual do Cenário
-**Contexto:** Um novo recurso (ex: regra de cupom de desconto) foi adicionado ao projeto e pode ter quebrado o que já funcionava no cálculo do carrinho.
+**Contexto:** Um novo recurso (uma regra de cupom de desconto, que passa a ser um parâmetro adicional de `CalculadoraCarrinho`) foi adicionado ao projeto e pode ter quebrado o que já funcionava no cálculo do carrinho.
 
-**Como a abordagem é aplicada:** Um servidor de integração contínua (CI/CD) agrupa todos os testes criados anteriormente em uma Suíte de Testes e os reexecuta automaticamente ao menor sinal de alteração no código-fonte.
+**Como a abordagem é aplicada:** Um servidor de integração contínua (CI/CD) agrupa todos os testes criados anteriormente em uma Suíte de Testes e os reexecuta automaticamente ao menor sinal de alteração no código-fonte, inclusive `executarTesteDescontoVIPOriginal()`, que chama `calcularDescontoProgressivo()` exatamente como nas seções anteriores, sem informar cupom, para confirmar que o comportamento antigo continua igual.
 
 **Objetivo e Defeitos Revelados:** Revela efeitos colaterais indesejados onde código novo corrompe funcionalidades antigas.
 
@@ -417,30 +417,30 @@ sequenceDiagram
 
 ## 4. Teste de Sistema
 
-### 4.1 Teste de Recuperação
+### 4.1 — Teste de Recuperação
 
 #### 1. Diagrama de Sequência UML
 ```mermaid
 sequenceDiagram
     autonumber
     actor Cliente as Aplicação Cliente
-    participant API as API Shop20
-    participant Master as Banco Master (Sessão)
+    participant Controller as CarrinhoController
+    participant Master as CarrinhoRepository (nó primário)
     participant Chaos as Simulador de Falha
     participant Sentinel as Failover (Sentinel)
-    participant Slave as Banco Réplica (Sessão)
+    participant Slave as CarrinhoRepository (nó réplica)
 
-    Cliente->>API: POST /carrinho/pagamento
-    activate API
+    Cliente->>Controller: POST /carrinho/adicionar
+    activate Controller
     
-    API->>Master: salvarEstadoSessao(dados)
+    Controller->>Master: salvarItem(usuarioId, produtoId, quantidade)
     activate Master
     
     Note over Master, Chaos: Simulador injeta falha crítica
     Chaos--xMaster: Mata o processo abruptamente (CRASH)
     deactivate Master
     
-    API--xAPI: Erro: Connection Timeout
+    Controller--xController: Erro: Connection Timeout
     
     Note over Sentinel, Slave: Mecanismo de Recuperação Automática
     Sentinel->>Master: ping()
@@ -449,25 +449,28 @@ sequenceDiagram
     activate Slave
     Slave-->>Sentinel: Status: Novo Master Ativo
     
-    Note over API, Slave: API implementa padrão de tolerância a falhas (Retry)
-    API->>Sentinel: ondeEstaOMaster()?
-    Sentinel-->>API: Retorna IP do Novo Master (Antigo Slave)
+    Note over Controller, Slave: Controller implementa padrão de tolerância a falhas (Retry)
+    Controller->>Sentinel: ondeEstaOMaster()?
+    Sentinel-->>Controller: Retorna endereço do Novo Master (Antigo Slave)
     
-    API->>Slave: tentarNovamente: salvarEstadoSessao(dados)
-    Slave-->>API: 200 OK (Sessão salva)
+    Controller->>Slave: tentarNovamente: salvarItem(usuarioId, produtoId, quantidade)
+    Slave-->>Controller: 200 OK (Item persistido)
     
-    API-->>Cliente: 200 OK (Sucesso transparente)
-    deactivate API
+    Controller-->>Cliente: 200 OK (Sucesso transparente)
+    deactivate Controller
     deactivate Slave
 ```
+
 #### 2. Explicação Textual do Cenário
-*Contexto:* No Shop20, o carrinho de compras mantém o estado da sessão em um banco de dados em memória, representado no diagrama pelo Banco Master (Sessão). Durante um pico de acessos, como a Black Friday, esse banco pode sofrer uma falha crítica. Para garantir alta disponibilidade, existe o Banco Réplica (Sessão), que pode assumir o lugar do Master por meio do `Failover (Sentinel)`. O objetivo do Teste de Recuperação é verificar se o Shop20 consegue continuar funcionando após essa falha sem intervenção humana.
+**Contexto:** No Shop20, o `CarrinhoRepository` é implementado sobre um cluster de banco de dados com nó primário e nó réplica, identificados como `CarrinhoRepository (nó primário)` e `CarrinhoRepository (nó réplica)`. Durante um pico de acessos, como a Black Friday, o nó primário pode sofrer uma falha crítica. Para garantir alta disponibilidade, o nó réplica pode assumir seu lugar por meio do `Failover (Sentinel)`. O objetivo do Teste de Recuperação é verificar se o Shop20 consegue continuar funcionando após essa falha sem intervenção humana.
 
-*Como a abordagem é aplicada:* Durante o teste, o Simulador de Falha provoca propositalmente um CRASH no `Banco Master (Sessão)` enquanto a API Shop20 está salvando os dados da sessão. A API recebe um `Connection Timeout`. Em seguida, o `Failover (Sentinel)` verifica o Master, identifica que o nó está inoperante e promove o Banco Réplica (Sessão) para um novo Master. A API Shop20 consulta o Sentinel para descobrir onde está o novo Master e realiza um Retry, salvando novamente os dados da sessão.
+**Como a abordagem é aplicada:** Durante o teste, o Simulador de Falha provoca propositalmente um CRASH no `CarrinhoRepository (nó primário)` enquanto o `CarrinhoController` está chamando `salvarItem()`. O `CarrinhoController` recebe um `Connection Timeout`. Em seguida, o `Failover (Sentinel)` verifica o nó primário, identifica que está inoperante e promove o `CarrinhoRepository (nó réplica)` a novo primário. O `CarrinhoController` consulta o Sentinel para descobrir o novo endereço e refaz a chamada `salvarItem()`, desta vez contra o nó réplica promovido.
 
-*Objetivo e Defeitos Revelados:* Validar se o Shop20 consegue se recuperar automaticamente após a falha do banco principal, mantendo a operação do usuário. Revela problemas como perda de dados da sessão, falhas no processo de Failover, indisponibilidade prolongada e erros no mecanismo de Retry.
+**Objetivo e Defeitos Revelados:** Validar se o Shop20 consegue se recuperar automaticamente após a falha do banco principal, mantendo a operação do usuário de adicionar item ao carrinho. Revela problemas como perda de dados no `CarrinhoRepository`, falhas no processo de Failover, indisponibilidade prolongada e erros no mecanismo de Retry.
 
-##4.2 — Teste de Segurança
+---
+
+### 4.2 — Teste de Segurança
 
 #### 1. Diagrama de Sequência UML
 ```mermaid
@@ -477,7 +480,7 @@ sequenceDiagram
     participant Controller as CarrinhoController
     participant Auth as ServicoAutenticacao (JWT)
     participant Service as CarrinhoService
-    participant DB as Banco de Dados
+    participant Repo as CarrinhoRepository
 
     Note over Atacante, Controller: Ataque combinado: IDOR (Tentando acessar o Carrinho da Vítima) e Preço Adulterado (R$ 0,01)
 
@@ -494,15 +497,15 @@ sequenceDiagram
     alt Acesso Negado (Bloqueio de IDOR)
         Controller-->>Atacante: 403 Forbidden (Acesso não autorizado)
     else Carrinho pertence ao Atacante (Passou no IDOR)
-        Controller->>Service: adicionarItem(produtoId, precoAdulterado)
+        Controller->>Service: adicionarAoCarrinho(usuarioId, produtoId, precoAdulterado)
         activate Service
         
-        Service->>DB: consultarPrecoReal(produtoId)
-        activate DB
-        DB-->>Service: precoReal = R$ 5000.00
-        deactivate DB
+        Service->>Repo: consultarPrecoReal(produtoId)
+        activate Repo
+        Repo-->>Service: precoReal = R$ 5000.00
+        deactivate Repo
         
-        Note over Service: Validação 2: Preço do Payload (0.01) == Preço do Banco (5000.00)?
+        Note over Service: Validação 2: Preço do Payload (0.01) == Preço do CarrinhoRepository (5000.00)?
         
         Service-->>Controller: ExcecaoSeguranca: Divergência de preço detectada!
         deactivate Service
@@ -513,13 +516,15 @@ sequenceDiagram
 ```
 
 #### 2. Explicação Textual do Cenário
-*Contexto:* No Shop20, o Teste de Segurança verifica se o sistema consegue impedir que um usuário mal-intencionado manipule informações do checkout. Nesse cenário, o `Atacante (Usuário Malicioso)` altera a requisição para tentar acessar o carrinho de outra pessoa por meio de um ataque IDOR e também modifica o preço do produto para R$ 0,01, caracterizando Parameter Tampering.
+**Contexto:** No Shop20, o Teste de Segurança verifica se o sistema consegue impedir que um usuário mal-intencionado manipule informações do checkout. Nesse cenário, o `Atacante (Usuário Malicioso)` altera a requisição para tentar acessar o carrinho de outra pessoa por meio de um ataque IDOR e também modifica o preço do produto para R$ 0,01, caracterizando Parameter Tampering.
 
-*Como a abordagem é aplicada:* O `Atacante (Usuário Malicioso)` envia uma requisição para o `CarrinhoController` com o `vitimaId` e o preço adulterado. O Controller consulta o `ServicoAutenticacao (JWT)` para identificar o usuário pelo Token. Caso o usuário tente acessar o carrinho de outra pessoa, o sistema bloqueia a requisição com 403 Forbidden. Caso o carrinho pertença ao próprio atacante, a requisição segue para o `CarrinhoService`, que consulta o preço verdadeiro no `Banco de Dados` por meio de `consultarPrecoReal(produtoId)`. Ao identificar que o preço enviado é diferente do preço armazenado, o sistema bloqueia a operação e retorna 400 Bad Request.
+**Como a abordagem é aplicada:** O `Atacante (Usuário Malicioso)` envia uma requisição para o `CarrinhoController` com o `vitimaId` e o preço adulterado. O Controller consulta o `ServicoAutenticacao (JWT)` para identificar o usuário pelo Token. Caso o usuário tente acessar o carrinho de outra pessoa, o sistema bloqueia a requisição com 403 Forbidden. Caso o carrinho pertença ao próprio atacante, a requisição segue para o `CarrinhoService`, que consulta o preço verdadeiro no `CarrinhoRepository` por meio de `consultarPrecoReal(produtoId)`. Ao identificar que o preço enviado é diferente do preço armazenado, o sistema bloqueia a operação e retorna 400 Bad Request.
 
-*Objetivo e Defeitos Revelados:* Validar se o Shop20 protege os dados do usuário e não confia em informações manipuladas pelo cliente. Revela falhas de controle de acesso (IDOR) e problemas de manipulação de parâmetros, como permitir que o preço enviado pelo front-end seja utilizado diretamente no processamento da compra.
+**Objetivo e Defeitos Revelados:** Validar se o Shop20 protege os dados do usuário e não confia em informações manipuladas pelo cliente. Revela falhas de controle de acesso (IDOR) e problemas de manipulação de parâmetros, como permitir que o preço enviado pelo front-end seja utilizado diretamente no processamento da compra.
 
-## 4.3 — Teste de Estresse (Stress Testing)
+---
+
+### 4.3 — Teste de Estresse (Stress Testing)
 
 #### 1. Diagrama de Arquitetura
 
@@ -536,18 +541,18 @@ flowchart TD
     LB{Load Balancer}
     
     subgraph Cluster API [Cluster Shop20 - Kubernetes]
-        API1(API Carrinho - Pod 1)
-        API2(API Carrinho - Pod 2)
-        API3(API Carrinho - Pod 3<br/>! CPU 100% !)
+        API1(CarrinhoController - Pod 1)
+        API2(CarrinhoController - Pod 2)
+        API3(CarrinhoController - Pod 3<br/>! CPU 100% !)
     end
 
-    Cache[(Redis<br/>Sessões)]
-    DB[(Banco de Dados<br/>! Fila de Conexões Cheia !)]
+    Cache[(Cache de Sessão<br/>Redis)]
+    DB[(CarrinhoRepository<br/>! Fila de Conexões Cheia !)]
     
     %% Observabilidade
     Monitor[[Ferramenta de Observabilidade<br/>Grafana / Datadog]]
     
-    %% Alerta de Ruptura (Corrigido para sintaxe de Flowchart)
+    %% Alerta de Ruptura
     Alerta>PONTO DE RUPTURA:<br/>Tempos de resposta > 10s<br/>Taxa de Erro 503 > 60%]
 
     %% Relações de Tráfego
@@ -565,15 +570,18 @@ flowchart TD
     DB -. "Alerta: Esgotamento de Pool de Conexões" .-> Monitor
     
     Monitor -.-> Alerta
- ```
+```
+
 #### 2. Explicação Textual do Cenário
-*Contexto:* No Shop20, o Teste de Estresse verifica o comportamento e os limites da arquitetura sob condições extremas de tráfego, simulando um evento de pico como a Black Friday. Nesse cenário, o objetivo não é confirmar se o sistema funciona em condições normais, mas sim submetê-lo a uma carga absurdamente alta (saltando de 500 para 15.000 requisições por segundo) para descobrir qual é o seu exato ponto de ruptura.
+**Contexto:** No Shop20, o Teste de Estresse verifica o comportamento e os limites da arquitetura sob condições extremas de tráfego, simulando um evento de pico como a Black Friday. Nesse cenário, o objetivo não é confirmar se o sistema funciona em condições normais, mas sim submetê-lo a uma carga absurdamente alta (saltando de 500 para 15.000 requisições por segundo) para descobrir qual é o seu exato ponto de ruptura. Cada pod do `Cluster Shop20` roda uma instância do `CarrinhoController`, interagindo com o `CarrinhoRepository` sob extrema pressão de infraestrutura.
 
-*Como a abordagem é aplicada:* Os `Geradores de Carga` em nuvem (utilizando ferramentas como k6 ou JMeter) disparam uma tempestade de acessos simultâneos contra o `Load Balancer`, que tenta distribuir o tráfego para os pods da API Carrinho. Durante o ataque, a `Ferramenta de Observabilidade` (Grafana ou Datadog) monitora métricas vitais como latência, CPU e memória RAM. O teste força a infraestrutura até que um componente crítico ceda — seja a CPU da API batendo 100% ou o `Banco de Dados` lotando sua fila de conexões —, registrando o momento em que a aplicação colapsa e começa a retornar lentidão severa (tempo de resposta > 10s) ou o erro `503 Service Unavailable`.
+**Como a abordagem é aplicada:** Os `Geradores de Carga` em nuvem (utilizando ferramentas como k6 ou JMeter) disparam uma tempestade de acessos simultâneos contra o `Load Balancer`, que distribui o tráfego entre os pods do `CarrinhoController`. Durante o ataque, a `Ferramenta de Observabilidade` (Grafana ou Datadog) monitora métricas vitais como latência, CPU e memória RAM. O teste força a infraestrutura até que um componente crítico ceda — seja a CPU do `CarrinhoController` batendo 100% ou o `CarrinhoRepository` lotando sua fila de conexões —, registrando o momento em que a aplicação colapsa e começa a retornar lentidão severa (tempo de resposta > 10s) ou o erro `503 Service Unavailable`.
 
-*Objetivo e Defeitos Revelados:* Identificar o limite máximo absoluto de capacidade do Shop20 e observar como o sistema reage à própria falha (se morre graciosamente ou corrompe dados). Revela gargalos severos de escalabilidade que não aparecem em testes normais, como esgotamento do pool de conexões do banco de dados, lentidão nos gatilhos de autoscaling e vazamento de memória sob pressão.
+**Objetivo e Defeitos Revelados:** Identificar o limite máximo absoluto de capacidade do Shop20 e observar como o sistema reage à própria falha (se morre graciosamente ou corrompe dados). Revela gargalos severos de escalabilidade que não aparecem em testes normais, como esgotamento do pool de conexões do `CarrinhoRepository`, lentidão nos gatilhos de autoscaling dos pods e vazamento de memória sob pressão.
 
-## 4.4 — Teste de Desempenho (Performance Testing)
+---
+
+### 4.4 — Teste de Desempenho (Performance Testing)
 
 #### 1. Diagrama de Sequência UML
 
@@ -581,36 +589,37 @@ flowchart TD
 sequenceDiagram
     autonumber
     actor Injetor as Ferramenta de Carga (k6/JMeter)
-    participant API as API Gateway (Shop20)
-    participant Service as Serviço de Carrinho
-    participant DB as Banco de Dados
+    participant Controller as CarrinhoController
+    participant Service as CarrinhoService
+    participant Repo as CarrinhoRepository
     
-    Note over Injetor, DB: Injeção de Carga Normal: 500 Usuários Virtuais simultâneos (VUs)
+    Note over Injetor, Repo: Injeção de Carga Normal: 500 Usuários Virtuais simultâneos (VUs)
     
     loop Durante 30 minutos (Carga Contínua)
-        Injetor->>API: POST /api/carrinho/adicionar
-        activate API
+        Injetor->>Controller: POST /carrinho/adicionar
+        activate Controller
         
-        API->>Service: rotearRequisicao(payload)
+        Controller->>Service: adicionarAoCarrinho(usuarioId, produtoId, quantidade)
         activate Service
         
-        Service->>DB: inserirItem(carrinhoId, produtoId)
-        activate DB
-        DB-->>Service: 200 OK (ms consumidos)
-        deactivate DB
+        Service->>Repo: salvarItem(usuarioId, produtoId, quantidade)
+        activate Repo
+        Repo-->>Service: 200 OK (ms consumidos)
+        deactivate Repo
         
-        Service-->>API: 200 OK (ms consumidos)
+        Service-->>Controller: 200 OK (ms consumidos)
         deactivate Service
         
-        API-->>Injetor: 200 OK (Registro de Latência)
-        deactivate API
+        Controller-->>Injetor: 200 OK (Registro de Latência)
+        deactivate Controller
     end
     
-    Note over Injetor, DB: META (SLA): Tempo de Resposta (Percentil 95) < 200ms | Taxa de Erro < 0.1%
+    Note over Injetor, Repo: META (SLA): Tempo de Resposta (Percentil 95) < 200ms | Taxa de Erro < 0.1%
 ```
+
 #### 2. Explicação Textual do Cenário
-*Contexto:* No Shop20, o Teste de Desempenho avalia se o sistema atende aos Acordos de Nível de Serviço (SLA) estabelecidos para o uso cotidiano. Diferente do Teste de Estresse (que busca quebrar a aplicação), este cenário simula uma carga normal e representativa — por exemplo, 500 usuários simultâneos adicionando produtos ao carrinho de forma constante. A meta de qualidade arquitetural é rigorosa: 95% das requisições (p95) devem ser respondidas em menos de 200 milissegundos, com uma taxa de erro máxima aceitável de 0,1%.
+**Contexto:** No Shop20, o Teste de Desempenho avalia se o sistema atende aos Acordos de Nível de Serviço (SLA) estabelecidos para o uso cotidiano. Diferente do Teste de Estresse (que busca quebrar a aplicação), este cenário simula uma carga normal e representativa — por exemplo, 500 usuários simultâneos adicionando produtos ao carrinho de forma constante, fluindo através do `CarrinhoController`, `CarrinhoService` e `CarrinhoRepository`. A meta de qualidade arquitetural é rigorosa: 95% das requisições (p95) devem ser respondidas em menos de 200 milissegundos, com uma taxa de erro máxima aceitável de 0,1%.
 
-*Como a abordagem é aplicada:* A `Ferramenta de Carga` (como k6, Gatling ou JMeter) é estruturada para enviar um fluxo contínuo de requisições em loop durante um período prolongado. A requisição atravessa o `API Gateway`, passa pelo `Serviço de Carrinho` e realiza as operações de escrita no `Banco de Dados`. A cada ciclo, a ferramenta de medição não verifica se a resposta está "certa" ou "errada" no sentido de negócio, mas atua como um cronômetro de precisão, agregando as latências e construindo gráficos de percentis em tempo real para avaliar se o sistema sofre degradação ao longo do tempo.
+**Como a abordagem é aplicada:** A `Ferramenta de Carga` (como k6, Gatling ou JMeter) é estruturada para enviar um fluxo contínuo de requisições em loop durante um período prolongado. A requisição atravessa o `CarrinhoController`, passa pelo `CarrinhoService` e realiza a operação `salvarItem()` no `CarrinhoRepository`. A cada ciclo, a ferramenta de medição não verifica se a resposta está "certa" ou "errada" no sentido de negócio, mas atua como um cronômetro de precisão, agregando as latências e construindo gráficos de percentis em tempo real para avaliar se o sistema sofre degradação ao longo do tempo.
 
-*Objetivo e Defeitos Revelados:* Avaliar a velocidade, a responsividade e a estabilidade do Shop20 nas operações normais. Revela gargalos de desempenho "silenciosos" (problemas que não derrubam o sistema, mas causam lentidão e frustração no usuário), como queries ineficientes no banco de dados por falta de índices, payloads JSON desnecessariamente pesados na rede ou alto tempo de processamento na camada de negócio.
+**Objetivo e Defeitos Revelados:** Avaliar a velocidade, a responsividade e a estabilidade do Shop20 nas operações normais. Revela gargalos de desempenho "silenciosos" (problemas que não derrubam o sistema, mas causam lentidão e frustração no usuário), como queries ineficientes no `CarrinhoRepository` por falta de índices, payloads JSON desnecessariamente pesados na rede ou alto tempo de processamento na camada de negócio do `CarrinhoService`.
