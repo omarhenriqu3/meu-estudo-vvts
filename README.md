@@ -414,3 +414,201 @@ sequenceDiagram
 **Como a abordagem é aplicada** O Cliente acessa o novo Checkout pelo App Shop20, que está liberado por uma Feature Flag. Ao realizar o pagamento, o App envia uma requisição para a API de Produção. Durante o processo, ocorre uma queda de conexão, causando um Timeout. O problema é registrado automaticamente pelo Monitoramento Passivo (Sentry). Além disso, o Cliente pode utilizar o Canal de Feedback Ativo para relatar o problema, permitindo que a equipe identifique falhas que acontecem em condições reais de uso. 
 
 **Objetivo e Defeitos Revelados:** Validar o comportamento do software no mundo real. Revela com facilidade defeitos de fragmentação de dispositivos (compatibilidade com celulares antigos), falhas em redes instáveis e comportamentos de uso que a equipe interna jamais conseguiria prever.
+
+## 4. Teste de Sistema
+
+### 4.1 Teste de Recuperação
+
+#### 1. Diagrama de Sequência UML
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Cliente as Aplicação Cliente
+    participant API as API Shop20
+    participant Master as Banco Master (Sessão)
+    participant Chaos as Simulador de Falha
+    participant Sentinel as Failover (Sentinel)
+    participant Slave as Banco Réplica (Sessão)
+
+    Cliente->>API: POST /carrinho/pagamento
+    activate API
+    
+    API->>Master: salvarEstadoSessao(dados)
+    activate Master
+    
+    Note over Master, Chaos: Simulador injeta falha crítica
+    Chaos--xMaster: Mata o processo abruptamente (CRASH)
+    deactivate Master
+    
+    API--xAPI: Erro: Connection Timeout
+    
+    Note over Sentinel, Slave: Mecanismo de Recuperação Automática
+    Sentinel->>Master: ping()
+    Sentinel-->>Sentinel: Detecta nó inoperante (Fail)
+    Sentinel->>Slave: promoverParaMaster()
+    activate Slave
+    Slave-->>Sentinel: Status: Novo Master Ativo
+    
+    Note over API, Slave: API implementa padrão de tolerância a falhas (Retry)
+    API->>Sentinel: ondeEstaOMaster()?
+    Sentinel-->>API: Retorna IP do Novo Master (Antigo Slave)
+    
+    API->>Slave: tentarNovamente: salvarEstadoSessao(dados)
+    Slave-->>API: 200 OK (Sessão salva)
+    
+    API-->>Cliente: 200 OK (Sucesso transparente)
+    deactivate API
+    deactivate Slave
+```
+#### 2. Explicação Textual do Cenário
+*Contexto:* No Shop20, o carrinho de compras mantém o estado da sessão em um banco de dados em memória, representado no diagrama pelo Banco Master (Sessão). Durante um pico de acessos, como a Black Friday, esse banco pode sofrer uma falha crítica. Para garantir alta disponibilidade, existe o Banco Réplica (Sessão), que pode assumir o lugar do Master por meio do `Failover (Sentinel)`. O objetivo do Teste de Recuperação é verificar se o Shop20 consegue continuar funcionando após essa falha sem intervenção humana.
+
+*Como a abordagem é aplicada:* Durante o teste, o Simulador de Falha provoca propositalmente um CRASH no `Banco Master (Sessão)` enquanto a API Shop20 está salvando os dados da sessão. A API recebe um `Connection Timeout`. Em seguida, o `Failover (Sentinel)` verifica o Master, identifica que o nó está inoperante e promove o Banco Réplica (Sessão) para um novo Master. A API Shop20 consulta o Sentinel para descobrir onde está o novo Master e realiza um Retry, salvando novamente os dados da sessão.
+
+*Objetivo e Defeitos Revelados:* Validar se o Shop20 consegue se recuperar automaticamente após a falha do banco principal, mantendo a operação do usuário. Revela problemas como perda de dados da sessão, falhas no processo de Failover, indisponibilidade prolongada e erros no mecanismo de Retry.
+
+##4.2 — Teste de Segurança
+
+#### 1. Diagrama de Sequência UML
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Atacante as Atacante (Usuário Malicioso)
+    participant Controller as CarrinhoController
+    participant Auth as ServicoAutenticacao (JWT)
+    participant Service as CarrinhoService
+    participant DB as Banco de Dados
+
+    Note over Atacante, Controller: Ataque combinado: IDOR (Tentando acessar o Carrinho da Vítima) e Preço Adulterado (R$ 0,01)
+
+    Atacante->>Controller: POST /api/carrinho/{vitimaId}/item (Preço: 0.01)
+    activate Controller
+    
+    Controller->>Auth: extrairUsuarioDoToken(Header JWT)
+    activate Auth
+    Auth-->>Controller: usuarioId = AtacanteID
+    deactivate Auth
+    
+    Note over Controller: Validação 1: O dono do Token (Atacante) é o dono do Carrinho ({vitimaId})?
+    
+    alt Acesso Negado (Bloqueio de IDOR)
+        Controller-->>Atacante: 403 Forbidden (Acesso não autorizado)
+    else Carrinho pertence ao Atacante (Passou no IDOR)
+        Controller->>Service: adicionarItem(produtoId, precoAdulterado)
+        activate Service
+        
+        Service->>DB: consultarPrecoReal(produtoId)
+        activate DB
+        DB-->>Service: precoReal = R$ 5000.00
+        deactivate DB
+        
+        Note over Service: Validação 2: Preço do Payload (0.01) == Preço do Banco (5000.00)?
+        
+        Service-->>Controller: ExcecaoSeguranca: Divergência de preço detectada!
+        deactivate Service
+        
+        Controller-->>Atacante: 400 Bad Request (Requisição manipulada)
+    end
+    deactivate Controller
+```
+
+#### 2. Explicação Textual do Cenário
+*Contexto:* No Shop20, o Teste de Segurança verifica se o sistema consegue impedir que um usuário mal-intencionado manipule informações do checkout. Nesse cenário, o `Atacante (Usuário Malicioso)` altera a requisição para tentar acessar o carrinho de outra pessoa por meio de um ataque IDOR e também modifica o preço do produto para R$ 0,01, caracterizando Parameter Tampering.
+
+*Como a abordagem é aplicada:* O `Atacante (Usuário Malicioso)` envia uma requisição para o `CarrinhoController` com o `vitimaId` e o preço adulterado. O Controller consulta o `ServicoAutenticacao (JWT)` para identificar o usuário pelo Token. Caso o usuário tente acessar o carrinho de outra pessoa, o sistema bloqueia a requisição com 403 Forbidden. Caso o carrinho pertença ao próprio atacante, a requisição segue para o `CarrinhoService`, que consulta o preço verdadeiro no `Banco de Dados` por meio de `consultarPrecoReal(produtoId)`. Ao identificar que o preço enviado é diferente do preço armazenado, o sistema bloqueia a operação e retorna 400 Bad Request.
+
+*Objetivo e Defeitos Revelados:* Validar se o Shop20 protege os dados do usuário e não confia em informações manipuladas pelo cliente. Revela falhas de controle de acesso (IDOR) e problemas de manipulação de parâmetros, como permitir que o preço enviado pelo front-end seja utilizado diretamente no processamento da compra.
+
+## 4.3 — Teste de Estresse (Stress Testing)
+
+#### 1. Diagrama de Arquitetura
+
+```mermaid
+flowchart TD
+    %% Nós do Gerador de Carga
+    subgraph Geradores de Carga [Nuvem de Injeção de Carga - k6/JMeter]
+        G1((Nó 1))
+        G2((Nó 2))
+        G3((Nó 3))
+    end
+
+    %% Componentes do Sistema
+    LB{Load Balancer}
+    
+    subgraph Cluster API [Cluster Shop20 - Kubernetes]
+        API1(API Carrinho - Pod 1)
+        API2(API Carrinho - Pod 2)
+        API3(API Carrinho - Pod 3<br/>! CPU 100% !)
+    end
+
+    Cache[(Redis<br/>Sessões)]
+    DB[(Banco de Dados<br/>! Fila de Conexões Cheia !)]
+    
+    %% Observabilidade
+    Monitor[[Ferramenta de Observabilidade<br/>Grafana / Datadog]]
+
+    %% Relações de Tráfego
+    G1 & G2 & G3 == "Injeção de 15.000 RPS<br/>(Simulação Black Friday)" === LB
+    
+    LB --> API1
+    LB --> API2
+    LB --> API3
+
+    API1 & API2 & API3 --> Cache
+    API1 & API2 & API3 -- "Tentativa de escrita (Gargalo)" --> DB
+
+    %% Relações de Monitoramento
+    API1 & API2 & API3 -. "Métricas: Latência, CPU, RAM" .-> Monitor
+    DB -. "Alerta: Esgotamento de Pool de Conexões" .-> Monitor
+    
+    %% Registro de Ruptura
+    Note right of Monitor: PONTO DE RUPTURA:<br/>Tempos de resposta > 10s<br/>Taxa de Erro 503 > 60%
+ ```
+#### 2. Explicação Textual do Cenário
+*Contexto:* No Shop20, o Teste de Estresse verifica o comportamento e os limites da arquitetura sob condições extremas de tráfego, simulando um evento de pico como a Black Friday. Nesse cenário, o objetivo não é confirmar se o sistema funciona em condições normais, mas sim submetê-lo a uma carga absurdamente alta (saltando de 500 para 15.000 requisições por segundo) para descobrir qual é o seu exato ponto de ruptura.
+
+*Como a abordagem é aplicada:* Os `Geradores de Carga` em nuvem (utilizando ferramentas como k6 ou JMeter) disparam uma tempestade de acessos simultâneos contra o `Load Balancer`, que tenta distribuir o tráfego para os pods da API Carrinho. Durante o ataque, a `Ferramenta de Observabilidade` (Grafana ou Datadog) monitora métricas vitais como latência, CPU e memória RAM. O teste força a infraestrutura até que um componente crítico ceda — seja a CPU da API batendo 100% ou o `Banco de Dados` lotando sua fila de conexões —, registrando o momento em que a aplicação colapsa e começa a retornar lentidão severa (tempo de resposta > 10s) ou o erro `503 Service Unavailable`.
+
+*Objetivo e Defeitos Revelados:* Identificar o limite máximo absoluto de capacidade do Shop20 e observar como o sistema reage à própria falha (se morre graciosamente ou corrompe dados). Revela gargalos severos de escalabilidade que não aparecem em testes normais, como esgotamento do pool de conexões do banco de dados, lentidão nos gatilhos de autoscaling e vazamento de memória sob pressão.
+
+## 4.4 — Teste de Desempenho (Performance Testing)
+
+#### 1. Diagrama de Sequência UML
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Injetor as Ferramenta de Carga (k6/JMeter)
+    participant API as API Gateway (Shop20)
+    participant Service as Serviço de Carrinho
+    participant DB as Banco de Dados
+    
+    Note over Injetor, DB: Injeção de Carga Normal: 500 Usuários Virtuais simultâneos (VUs)
+    
+    loop Durante 30 minutos (Carga Contínua)
+        Injetor->>API: POST /api/carrinho/adicionar
+        activate API
+        
+        API->>Service: rotearRequisicao(payload)
+        activate Service
+        
+        Service->>DB: inserirItem(carrinhoId, produtoId)
+        activate DB
+        DB-->>Service: 200 OK (ms consumidos)
+        deactivate DB
+        
+        Service-->>API: 200 OK (ms consumidos)
+        deactivate Service
+        
+        API-->>Injetor: 200 OK (Registro de Latência)
+        deactivate API
+    end
+    
+    Note over Injetor, DB: META (SLA): Tempo de Resposta (Percentil 95) < 200ms | Taxa de Erro < 0.1%
+```
+#### 2. Explicação Textual do Cenário
+*Contexto:* No Shop20, o Teste de Desempenho avalia se o sistema atende aos Acordos de Nível de Serviço (SLA) estabelecidos para o uso cotidiano. Diferente do Teste de Estresse (que busca quebrar a aplicação), este cenário simula uma carga normal e representativa — por exemplo, 500 usuários simultâneos adicionando produtos ao carrinho de forma constante. A meta de qualidade arquitetural é rigorosa: 95% das requisições (p95) devem ser respondidas em menos de 200 milissegundos, com uma taxa de erro máxima aceitável de 0,1%.
+
+*Como a abordagem é aplicada:* A `Ferramenta de Carga` (como k6, Gatling ou JMeter) é estruturada para enviar um fluxo contínuo de requisições em loop durante um período prolongado. A requisição atravessa o `API Gateway`, passa pelo `Serviço de Carrinho` e realiza as operações de escrita no `Banco de Dados`. A cada ciclo, a ferramenta de medição não verifica se a resposta está "certa" ou "errada" no sentido de negócio, mas atua como um cronômetro de precisão, agregando as latências e construindo gráficos de percentis em tempo real para avaliar se o sistema sofre degradação ao longo do tempo.
+
+*Objetivo e Defeitos Revelados:* Avaliar a velocidade, a responsividade e a estabilidade do Shop20 nas operações normais. Revela gargalos de desempenho "silenciosos" (problemas que não derrubam o sistema, mas causam lentidão e frustração no usuário), como queries ineficientes no banco de dados por falta de índices, payloads JSON desnecessariamente pesados na rede ou alto tempo de processamento na camada de negócio.
